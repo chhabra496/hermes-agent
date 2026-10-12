@@ -1098,6 +1098,8 @@ The bundled first consumer is the **drain** provider (`plugins/dashboard_auth/dr
 
 Custom providers can implement `supports_token`/`verify_token` the same way to expose their own machine-authable endpoints.
 
+The bundled **kanban service** provider (`plugins/dashboard_auth/kanban_service`) lets a local service (an MCP server, a ticket bridge) drive the kanban plugin API while the login gate is on — for example when `dashboard.public_url` points at a public host, where the loopback session token (`X-Hermes-Session-Token`) is not accepted. Set `HERMES_DASHBOARD_KANBAN_TOKEN` to a >=256-bit secret (same entropy gate as drain) and send `Authorization: Bearer <secret>`. The credential is accepted only on `GET /api/plugins/kanban/board`, `POST /api/plugins/kanban/tasks`, `GET`/`PATCH /api/plugins/kanban/tasks/<id>` and `POST /api/plugins/kanban/tasks/<id>/comments`; every other route and method (including `DELETE`) still needs a login. On those routes a missing or unknown bearer falls through to the normal login gate, so browser sessions are unchanged. Plugins bind their own path-parameter routes the same way with `token_auth.register_bound_token_route(pattern, methods=..., providers=...)`.
+
 ### Verifying the gate is on
 
 ```bash

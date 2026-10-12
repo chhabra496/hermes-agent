@@ -1,0 +1,7 @@
+name: kanban_service
+version: 1.0.0
+description: "Dashboard auth provider — non-interactive shared-bearer service credential for the kanban plugin API, so a local service (an MCP server, a ticket bridge) can drive /api/plugins/kanban/{board,tasks,tasks/<id>,tasks/<id>/comments} while the dashboard login gate is on. Verifies an inbound Authorization bearer against HERMES_DASHBOARD_KANBAN_TOKEN with a constant-time compare. Bound-only: the credential is consulted solely on those method+path pairs (no DELETE, no other kanban or dashboard route) and falls through to the normal login gate otherwise. Fails CLOSED: a weak (< 256-bit) secret is rejected at registration. No-op when the env var is unset."
+author: NousResearch
+kind: backend
+requires_env:
+  - HERMES_DASHBOARD_KANBAN_TOKEN

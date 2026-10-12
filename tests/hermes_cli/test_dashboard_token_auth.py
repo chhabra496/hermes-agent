@@ -235,3 +235,110 @@ def test_seam_rejects_wrong_token_401():
     assert resp.status_code == 401
 
 
+
+
+# --------------------------------------------------------------------------
+# Provider-bound pattern routes (register_bound_token_route)
+# --------------------------------------------------------------------------
+
+
+class _BoundOnlyProvider(_TokenProvider):
+    """A token provider that may only vouch for routes bound to it."""
+
+    name = "bound"
+    display_name = "Bound Provider"
+    bound_token_routes_only = True
+
+    def __init__(self, *, secret: str = "bound-secret"):
+        super().__init__(secret=secret, scopes=("kanban",))
+
+
+class _MethodRequest(_FakeRequest):
+    def __init__(self, method="GET", **kw):
+        super().__init__(**kw)
+        self.method = method
+
+
+_TASK = r"/api/plugins/kanban/tasks/[A-Za-z0-9_-]{1,64}"
+
+
+async def _call_next_state(request):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        {"token_authenticated": getattr(request.state, "token_authenticated", False)}, status_code=200)
+
+
+def _seam(req):
+    import json as _json
+
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_state))
+    return resp.status_code, _json.loads(resp.body)
+
+
+def test_bound_route_requires_method_and_provider():
+    with pytest.raises(ValueError):
+        token_auth.register_bound_token_route(_TASK, methods=(), providers=("bound",))
+    with pytest.raises(ValueError):
+        token_auth.register_bound_token_route(_TASK, methods=("GET",), providers=())
+
+
+def test_bound_route_full_match_and_method_only():
+    token_auth.register_bound_token_route(_TASK, methods=("get", "PATCH"), providers=("bound",))
+    assert token_auth.match_bound_token_route("GET", "/api/plugins/kanban/tasks/t_ab12") == {"bound"}
+    assert token_auth.match_bound_token_route("PATCH", "/api/plugins/kanban/tasks/t_ab12") == {"bound"}
+    # Method not bound, sibling/child paths, traversal and encoded separators never match.
+    for method, path in [
+        ("DELETE", "/api/plugins/kanban/tasks/t_ab12"),
+        ("GET", "/api/plugins/kanban/tasks/t_ab12/log"),
+        ("GET", "/api/plugins/kanban/tasks/.."),
+        ("GET", "/api/plugins/kanban/tasks/t_ab12/../../config"),
+        ("GET", "/api/plugins/kanban/tasks/t%2Fx"),
+        ("GET", "/api/plugins/kanban/tasks/"),
+        ("GET", "/x/api/plugins/kanban/tasks/t_ab12"),
+    ]:
+        assert token_auth.match_bound_token_route(method, path) is None, (method, path)
+
+
+def test_bound_route_valid_token_authenticates():
+    register_provider(_BoundOnlyProvider())
+    token_auth.register_bound_token_route(_TASK, methods=("GET",), providers=("bound",))
+    req = _MethodRequest(path="/api/plugins/kanban/tasks/t_1", headers={"authorization": "Bearer bound-secret"})
+    assert _seam(req) == (200, {"token_authenticated": True})
+    assert req.state.token_principal.provider == "bound"
+
+
+def test_bound_route_missing_or_wrong_token_falls_through_unauthenticated():
+    """Additive: no 401 from the seam, and nothing attached — the normal gates decide."""
+    register_provider(_BoundOnlyProvider())
+    token_auth.register_bound_token_route(_TASK, methods=("GET",), providers=("bound",))
+    for headers in ({}, {"authorization": "Bearer wrong"}, {"authorization": "Basic Ym91bmQtc2VjcmV0"}):
+        req = _MethodRequest(path="/api/plugins/kanban/tasks/t_1", headers=headers)
+        assert _seam(req) == (200, {"token_authenticated": False})
+        assert not hasattr(req.state, "token_principal")
+
+
+def test_bound_route_ignores_unbound_providers():
+    """A different token provider (e.g. drain) can never vouch for a bound route."""
+    register_provider(_TokenProvider(secret="drain-secret"))
+    register_provider(_BoundOnlyProvider())
+    token_auth.register_bound_token_route(_TASK, methods=("GET",), providers=("bound",))
+    req = _MethodRequest(path="/api/plugins/kanban/tasks/t_1", headers={"authorization": "Bearer drain-secret"})
+    assert _seam(req) == (200, {"token_authenticated": False})
+
+
+def test_bound_only_provider_never_authenticates_exact_token_route():
+    """A bound-only credential is not consulted on a legacy exact route (/api/gateway/drain)."""
+    register_provider(_BoundOnlyProvider())
+    token_auth.register_token_route("/api/gateway/drain")
+    req = _MethodRequest(method="POST", path="/api/gateway/drain", headers={"authorization": "Bearer bound-secret"})
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 401
+    assert not getattr(req.state, "token_authenticated", False)
+
+
+def test_bound_route_unmatched_path_untouched():
+    register_provider(_BoundOnlyProvider())
+    token_auth.register_bound_token_route(_TASK, methods=("GET",), providers=("bound",))
+    req = _MethodRequest(path="/api/sessions", headers={"authorization": "Bearer bound-secret"})
+    assert _seam(req) == (200, {"token_authenticated": False})
